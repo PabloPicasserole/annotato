@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canvas feedback</title>
+<style>
+:root { --bg:#0a0a0a; --surface:#111; --raised:#171717; --faint:#1c1c1c; --line:#222; --line-strong:#333; --fg:#ededed; --muted:#8f8f8f; --subtle:#5f5f5f; --mark:#8b5cf6; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 400 14px/1.5 "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+main { max-width: 1080px; margin: 0 auto; padding: 48px 24px; }
+h1 { margin: 0 0 8px; font-size: 28px; font-weight: 600; letter-spacing: -0.025em; }
+.lead { margin: 0 0 32px; color: var(--muted); text-wrap: pretty; }
+button { font: inherit; cursor: pointer; border: 0; }
+.primary { height: 36px; padding: 0 16px; border-radius: 8px; background: var(--fg); color: var(--bg); font-weight: 500; }
+.primary:hover { background: #fff; }
+.hint { color: var(--subtle); }
+h2 { margin: 0 0 12px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 500; color: var(--muted); font-size: 13px; padding: 0 12px 8px; border-bottom: 1px solid var(--line); }
+td { padding: 0 12px; height: 48px; border-bottom: 1px solid var(--line); }
+tr.row { cursor: pointer; }
+tr.row:hover td { background: var(--surface); }
+td .name { font-weight: 500; }
+td .path { color: var(--subtle); font-size: 12px; overflow-wrap: anywhere; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 4px; background: var(--mark); margin-right: 6px; }
+.empty { color: var(--muted); padding: 16px 0; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-bottom: 48px; }
+.card { display: flex; flex-direction: column; gap: 12px; padding: 24px; border-radius: 12px; background: var(--surface); box-shadow: 0 0 0 1px var(--line); }
+.card h2 { margin: 0; }
+.card p { margin: 0; color: var(--muted); text-wrap: pretty; }
+.card .grow { flex: 1; }
+.field { display: flex; gap: 8px; align-items: center; }
+input { flex: 1; min-width: 0; height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--bg); color: var(--fg); font: inherit; outline: none; }
+input:focus { border-color: #555; }
+.ghost { height: 36px; padding: 0 14px; border-radius: 8px; background: var(--raised); color: var(--fg); font-weight: 500; box-shadow: 0 0 0 1px var(--line-strong); white-space: nowrap; }
+.ghost:hover { background: var(--faint); }
+.folder { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.err { color: #f87171; font-size: 13px; }
+.err:empty, .hint:empty { display: none; }
+code { font: 13px Consolas, monospace; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Canvas feedback</h1>
+  <p class="lead">Mark up a design with pins, boxes, arrows, drawings and sticky notes, then export everything for Claude in one go. Feedback is saved in the project you review, never here.</p>
+  <div class="cards">
+    <section class="card">
+      <h2>A mock or page on disk</h2>
+      <p>Any HTML file or folder of pages, like the prototypes Claude builds. Shortcut: drag it onto <b>Review a mock.cmd</b>, or right-click it and choose <b>Send to › Review a mock</b>.</p>
+      <span class="grow"></span>
+      <div class="field"><button class="primary" id="pick">Choose a file…</button><span class="hint" id="msg"></span></div>
+    </section>
+    <section class="card">
+      <h2>A running app</h2>
+      <p>An app on a dev server, like a React or Vite app at <code>localhost:5173</code>. Start it first (usually <code>npm run dev</code>, or ask Claude to).</p>
+      <div class="field"><input id="appurl" placeholder="http://localhost:5173" spellcheck="false"></div>
+      <div class="field"><button class="ghost" id="pickdir">Choose project folder…</button><span class="folder" id="folder">Feedback is saved in this folder.</span></div>
+      <div class="field"><button class="primary" id="openapp">Open app</button><span class="err" id="apperr"></span></div>
+    </section>
+  </div>
+  <h2>Recent</h2>
+  <div id="recent"><div class="empty">Loading…</div></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const post = async (p, body) => (await fetch('/__cf/api/' + p, { method: 'POST', body: JSON.stringify(body || {}) })).json();
+const last = (p) => p.split(/[\\/]/).slice(-2).join(' / ');
+let project = '';
+function setProject(p) { project = p; $('folder').textContent = p || 'Feedback is saved in this folder.'; $('folder').style.color = p ? 'var(--fg)' : ''; }
+
+async function load() {
+  const list = await (await fetch('/__cf/api/recent')).json();
+  $('recent').innerHTML = list.length ? `<table><thead><tr><th>Design</th><th>Open notes</th><th>Last export</th></tr></thead><tbody>${list.map((r, i) =>
+    `<tr class="row" data-i="${i}"><td><div class="name">${esc(r.file ? last(r.file) : r.app + ' · ' + last(r.project))}</div><div class="path">${esc(r.file || 'Running app, feedback in ' + r.project)}</div></td>` +
+    `<td>${r.notes ? `<span class="dot"></span>${r.notes}` : '<span class="hint">None</span>'}</td><td>${r.lastExport ? esc(r.lastExport) : '<span class="hint">Never</span>'}</td></tr>`).join('')}</tbody></table>`
+    : '<div class="empty">Nothing yet. Choose a file or open an app to start.</div>';
+  $('recent').onclick = (e) => { const t = e.target.closest('[data-i]'); if (!t) return; const r = list[+t.dataset.i]; r.file ? (location.href = r.url) : go({ url: r.app, project: r.project }); };
+}
+
+async function go(target) {
+  $('apperr').textContent = '';
+  const r = await post('go', target);
+  if (r.ok) return (location.href = r.url);
+  if (r.needUrl) { setProject(r.project); $('appurl').focus(); $('apperr').textContent = 'That folder is an app: enter the address it runs at.'; return; }
+  if (r.needProject) { $('appurl').value = r.url; $('apperr').textContent = 'Choose the app\'s project folder first.'; return; }
+  $('apperr').textContent = r.error || 'Could not open it.';
+}
+
+$('pick').onclick = async () => {
+  $('msg').textContent = 'A file window opened. It may be behind this one.';
+  const r = await post('pick', { kind: 'file' });
+  $('msg').textContent = '';
+  if (r.path) go({ file: r.path });
+};
+$('pickdir').onclick = async () => {
+  $('folder').textContent = 'A folder window opened. It may be behind this one.';
+  const r = await post('pick', { kind: 'folder' });
+  setProject(r.path || project);
+};
+$('openapp').onclick = () => go({ url: $('appurl').value.trim() || 'http://localhost:5173', project });
+$('appurl').onkeydown = (e) => { if (e.key === 'Enter') $('openapp').click(); };
+
+const qs = new URLSearchParams(location.search);
+if (qs.get('project')) { setProject(qs.get('project')); $('apperr').textContent = 'That folder is an app: enter the address it runs at.'; $('appurl').focus(); }
+if (qs.get('url')) { $('appurl').value = qs.get('url'); $('apperr').textContent = 'Choose the app\'s project folder first.'; }
+load();
+</script>
+</body>
+</html>
