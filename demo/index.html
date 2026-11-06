@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pantry: demo mock</title>
+<style>
+/* A made-up meal-planner app, drawn as a zoomable canvas of desktop and phone frames.
+   Use it to try Annotato: drag this folder onto "Annotato.cmd". */
+:root { --cream: #f6f1e7; --ink: #1f2a24; --muted: #6b7568; --green: #2f6b4f; --leaf: #cfe3d4; --tomato: #e0603c; --sun: #f2c14e; --card: #fffdf8; --line: #e6dfd0; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #ece7dc; font: 15px/1.5 "Segoe UI", system-ui, sans-serif; color: var(--ink); }
+.viewport { position: fixed; inset: 0; cursor: grab; background-image: radial-gradient(#cfc8b8 1px, transparent 1px); background-size: 24px 24px; }
+.viewport.drag { cursor: grabbing; }
+.world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.label { position: absolute; font-size: 44px; font-weight: 700; letter-spacing: -0.02em; white-space: nowrap; }
+.label span { color: var(--muted); font-weight: 500; margin-right: 16px; }
+.frame { position: absolute; background: var(--cream); border-radius: 14px; box-shadow: 0 2px 0 var(--line), 0 18px 40px rgba(31,42,36,.12); overflow: hidden; }
+.frame.phone { border-radius: 44px; border: 12px solid #1f2a24; }
+.tag { position: absolute; top: -34px; right: 0; color: var(--muted); font-size: 20px; }
+.top { display: flex; align-items: center; gap: 16px; padding: 22px 40px; border-bottom: 1px solid var(--line); background: var(--card); }
+.phone .top { padding: 18px 22px; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 22px; }
+.logo i { width: 30px; height: 30px; border-radius: 9px; background: var(--green); display: inline-block; position: relative; }
+.logo i::after { content: ""; position: absolute; inset: 8px 8px 12px 8px; border-radius: 50% 50% 4px 4px; background: var(--leaf); }
+.nav { margin-left: auto; display: flex; gap: 28px; color: var(--muted); }
+.nav b { color: var(--ink); }
+.avatar { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, var(--sun), var(--tomato)); }
+.page { padding: 48px 64px; }
+.phone .page { padding: 24px 22px; }
+h1 { font-size: 52px; line-height: 1.05; margin: 0 0 16px; letter-spacing: -0.03em; }
+.phone h1 { font-size: 34px; }
+h2 { font-size: 22px; margin: 0 0 12px; }
+p { margin: 0 0 16px; color: var(--muted); }
+.btn { display: inline-block; padding: 14px 26px; border-radius: 999px; background: var(--green); color: #fff; font-weight: 600; }
+.btn.ghost { background: transparent; color: var(--green); box-shadow: inset 0 0 0 2px var(--green); margin-left: 10px; }
+.hero { display: grid; grid-template-columns: 1.1fr 1fr; gap: 56px; align-items: center; }
+.plate { aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle at 50% 50%, #fff 0 52%, var(--line) 53% 56%, #fff 57%); position: relative; box-shadow: 0 30px 60px rgba(31,42,36,.15); }
+.plate b { position: absolute; border-radius: 50%; }
+.grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+.phone .grid { grid-template-columns: 1fr; }
+.card { background: var(--card); border-radius: 18px; padding: 16px; box-shadow: 0 1px 0 var(--line); }
+.food { height: 120px; border-radius: 12px; margin-bottom: 12px; }
+.day { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.meal { font-weight: 600; font-size: 17px; }
+.meta { font-size: 13px; color: var(--muted); }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 24px; }
+.chip { padding: 6px 14px; border-radius: 999px; background: var(--leaf); color: var(--green); font-weight: 600; font-size: 14px; }
+.list li { padding: 10px 0; border-bottom: 1px solid var(--line); list-style: none; display: flex; justify-content: space-between; }
+.list { padding: 0; margin: 0 0 24px; }
+.two { display: grid; grid-template-columns: 1fr 1.2fr; gap: 48px; }
+.phone .two, .phone .hero { grid-template-columns: 1fr; gap: 24px; }
+.bar { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); display: flex; gap: 6px; align-items: center; padding: 6px 8px 6px 16px; border-radius: 999px; background: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.08); font-size: 14px; }
+.bar button { font: inherit; border: 0; background: #f0ebe0; border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="viewport" id="vp"><div class="world" id="world"></div></div>
+<div class="bar"><b>Pantry</b>&nbsp;demo mock · scroll to zoom, drag to pan <button id="fit">Fit all</button></div>
+<script>
+const FOOD = ['linear-gradient(135deg,#f2c14e,#e0603c)', 'linear-gradient(135deg,#cfe3d4,#2f6b4f)', 'linear-gradient(135deg,#f6d8c7,#c9744f)', 'linear-gradient(135deg,#e8e1a8,#9aa84a)'];
+const MEALS = [['Mon', 'Lemon orzo with peas', '25 min · 4 servings'], ['Tue', 'Sheet-pan veggie tacos', '30 min · 4 servings'], ['Wed', 'Miso noodle soup', '20 min · 2 servings'], ['Thu', 'Tomato and white bean bake', '40 min · 4 servings']];
+const topBar = (active) => `<div class="top"><span class="logo"><i></i>Pantry</span><nav class="nav">${['Plan', 'Recipes', 'Shopping'].map((n) => n === active ? `<b>${n}</b>` : `<span>${n}</span>`).join('')}</nav><span class="avatar"></span></div>`;
+const plate = `<div class="plate"><b style="inset:22% 40% 46% 22%;background:${FOOD[1]}"></b><b style="inset:30% 22% 34% 50%;background:${FOOD[0]}"></b><b style="inset:56% 34% 20% 30%;background:${FOOD[3]}"></b></div>`;
+const SCREENS = [
+  { id: 'welcome', label: 'Welcome', r: (p) => `${topBar('Plan')}<main class="page"><section class="hero"><div><h1>Dinner, decided for the week</h1><p>Tell Pantry what you like and what's in the fridge. Get a plan for the week and one shopping list.</p><span class="btn">Plan my week</span>${p ? '' : '<span class="btn ghost">See a sample</span>'}</div>${plate}</section></main>` },
+  { id: 'week', label: 'This week', r: (p) => `${topBar('Plan')}<main class="page"><h1>This week</h1><div class="chips"><span class="chip">Vegetarian</span><span class="chip">Under 40 min</span><span class="chip">Uses up spinach</span></div><div class="grid">${MEALS.map(([d, m, t], i) => `<article class="card"><div class="food" style="background:${FOOD[i]}"></div><div class="day">${d}</div><div class="meal">${m}</div><div class="meta">${t}</div></article>`).join('')}</div></main>` },
+  { id: 'recipe', label: 'Recipe', r: (p) => `${topBar('Recipes')}<main class="page"><div class="two"><div><div class="food" style="height:${p ? 180 : 360}px;background:${FOOD[0]}"></div></div><div><h1>Lemon orzo with peas</h1><p>Bright, creamy and ready in 25 minutes.</p><h2>Ingredients</h2><ul class="list"><li><span>Orzo</span><span>300 g</span></li><li><span>Frozen peas</span><span>200 g</span></li><li><span>Lemon</span><span>1</span></li><li><span>Parmesan</span><span>40 g</span></li></ul><span class="btn">Start cooking</span></div></div></main>` },
+];
+const DW = 1440, DH = 900, PW = 390, PH = 844, GAP = 80, ROW = 1200;
+const world = document.getElementById('world'), vp = document.getElementById('vp');
+world.innerHTML = SCREENS.map((s, n) => {
+  const y = n * ROW;
+  return `<div class="label" style="left:0;top:${y}px"><span>${String(n + 1).padStart(2, '0')}</span>${s.label}</div>` +
+    `<div class="frame" data-screen="${s.id}:desktop" style="left:0;top:${y + 110}px;width:${DW}px;height:${DH}px"><div class="tag">Desktop 1440</div>${s.r(false)}</div>` +
+    `<div class="frame phone" data-screen="${s.id}:phone" style="left:${DW + GAP}px;top:${y + 110}px;width:${PW}px;height:${PH}px">${s.r(true)}</div>`;
+}).join('');
+document.querySelectorAll('.frame').forEach((f) => { const t = f.querySelector('.tag'); if (t) { f.parentNode.insertBefore(t, f); t.style.left = f.style.left; t.style.top = (parseInt(f.style.top) - 34) + 'px'; t.style.width = f.style.width; t.style.textAlign = 'right'; t.style.right = 'auto'; } });
+const W = DW + GAP + PW, H = SCREENS.length * ROW;
+const cam = { x: 0, y: 0, z: 0.3 };
+const apply = () => { world.style.transform = `translate(${cam.x}px,${cam.y}px) scale(${cam.z})`; };
+function fit(box = { x: -60, y: -60, w: W + 120, h: H }) {
+  cam.z = Math.min(innerWidth / box.w, (innerHeight - 60) / box.h);
+  cam.x = (innerWidth - box.w * cam.z) / 2 - box.x * cam.z; cam.y = 60 + (innerHeight - 60 - box.h * cam.z) / 2 - box.y * cam.z; apply();
+}
+function zoomAt(f, px, py) { const z = Math.min(2, Math.max(0.05, cam.z * f)); cam.x = px - (px - cam.x) * z / cam.z; cam.y = py - (py - cam.y) * z / cam.z; cam.z = z; apply(); }
+vp.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY); }, { passive: false });
+let drag = null;
+vp.addEventListener('pointerdown', (e) => { drag = { x: e.clientX - cam.x, y: e.clientY - cam.y }; vp.classList.add('drag'); vp.setPointerCapture(e.pointerId); });
+vp.addEventListener('pointermove', (e) => { if (drag) { cam.x = e.clientX - drag.x; cam.y = e.clientY - drag.y; apply(); } });
+vp.addEventListener('pointerup', () => { drag = null; vp.classList.remove('drag'); });
+document.getElementById('fit').onclick = () => fit();
+window.focusScreen = (id) => fit({ x: -140, y: SCREENS.findIndex((s) => s.id === id) * ROW - 20, w: W + 180, h: DH + 160 });
+addEventListener('resize', () => fit());
+fit();
+</script>
+</body>
+</html>

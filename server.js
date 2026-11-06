@@ -1,4 +1,4 @@
-// Canvas feedback: a tiny local server that opens any HTML mock with an annotation overlay,
+// Annotato: a tiny local server that opens any HTML mock with an annotation overlay,
 // keeps the draft notes next to the mock, takes screenshots through Chrome and exports a
 // feedback bundle for Claude. Node only, no packages.
 //
@@ -239,7 +239,7 @@ function exportBundle(fp, meta) {
     `- Mock: \`${fp.label}\``,
     `- Exported: ${new Date().toLocaleString('en-GB')} · ${list.length} note${list.length === 1 ? '' : 's'}`,
     `- Window: ${meta.viewport || '?'}`, '',
-    '> For Claude: these are the reviewer\'s notes on this design, made with the canvas-feedback tool.',
+    '> For Claude: these are the reviewer\'s notes on this design, made with Annotato.',
     '> Each note has a screenshot cropped around it (the reviewer\'s mark is drawn on it in purple with its number) and,',
     '> where saved, a picture of the whole window for orientation. "Element" and "Selector" point at the DOM element',
     '> the mark is attached to, as it was rendered when the note was made. Look at every screenshot, read the mock\'s',

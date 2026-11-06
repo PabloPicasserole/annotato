@@ -1,10 +1,10 @@
-// Canvas feedback overlay: injected into every mock page by server.js.
+// Annotato overlay: injected into every mock page by server.js.
 // Marks are attached to the DOM element under them (position relative to that element's box),
 // so they follow any zoom, pan or scroll the mock does. Everything lives in a shadow root so
 // the mock's CSS and ours never mix.
 (() => {
-  if (window.top !== window || window.__canvasFeedback) return;
-  window.__canvasFeedback = true;
+  if (window.top !== window || window.__annotato) return;
+  window.__annotato = true;
 
   const q = (p) => `/__cf/api/${p}?page=${encodeURIComponent(location.pathname)}`;
   const call = async (method, p, body) => {
@@ -34,7 +34,7 @@
 
   /* ---------- Shadow root and styles ---------- */
 
-  const host = document.createElement('canvas-feedback');
+  const host = document.createElement('annotato-overlay');
   host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;display:block';
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `<style>
