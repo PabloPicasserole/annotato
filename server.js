@@ -4,7 +4,8 @@
 //
 //   node server.js [file.html | folder]          open a mock (starts the server in the background if needed)
 //   node server.js http://localhost:5173 [project] review a running app (dev server); feedback goes to project/feedback
-//   node server.js --serve                       run the server in this window (for debugging)
+//   node server.js --start                       make sure the server runs in the background (used at Windows login)
+//   node server.js --serve [--stay]              run the server in this window (--stay: never quit when idle)
 
 const http = require('http');
 const https = require('https');
@@ -43,11 +44,14 @@ async function ping() {
   try { const r = await fetch(`${ORIGIN}/__cf/api/ping`); return r.ok; } catch { return false; }
 }
 
+async function ensureServer(stay) {
+  if (await ping()) return;
+  spawn(process.execPath, [__filename, '--serve', ...(stay ? ['--stay'] : [])], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  for (let i = 0; i < 50 && !(await ping()); i++) await new Promise((r) => setTimeout(r, 100));
+}
+
 async function launch(arg, project) {
-  if (!(await ping())) {
-    spawn(process.execPath, [__filename, '--serve'], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-    for (let i = 0; i < 50 && !(await ping()); i++) await new Promise((r) => setTimeout(r, 100));
-  }
+  await ensureServer(false);
   const isUrl = /^https?:\/\//i.test(arg || '');
   const body = JSON.stringify(isUrl ? { url: arg, project: project ? path.resolve(project) : '' } : { file: arg ? path.resolve(arg) : '' });
   const r = await fetch(`${ORIGIN}/__cf/api/open`, { method: 'POST', body });
@@ -371,6 +375,45 @@ function startProxy(a) {
   apps.set(a.port, a);
 }
 
+/* ---------- Chrome extension: any localhost app in the owner's own Chrome ---------- */
+
+// The extension sends the app's origin (http://localhost:5173). Which project is that? Ask Windows
+// which process listens on the port, then walk up from the paths in its command line to the project
+// folder. A folder the owner chose by hand wins; it is kept per origin in work/origins.json.
+const ORIGINS = path.join(WORK, 'origins.json');
+const readOrigins = () => { try { return JSON.parse(fs.readFileSync(ORIGINS, 'utf8')); } catch { return {}; } };
+const detected = new Map(); // origin -> { project, at }
+
+function processInfo(port) {
+  const ps = `$c = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; ` +
+    `if ($c) { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)"; $q = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)"; ` +
+    '$p.ExecutablePath; $p.CommandLine; $q.CommandLine }';
+  return new Promise((ok) => execFile('powershell', ['-NoProfile', '-Command', ps], { windowsHide: true, timeout: 8000 }, (e, out) => ok(out || '')));
+}
+
+function projectFromCommandLines(text) {
+  const tokens = [...text.matchAll(/"([A-Za-z]:\\[^"]+)"|([A-Za-z]:\\[^\s"]+)/g)].map((m) => m[1] || m[2]);
+  for (let t of tokens) {
+    if (/\\(Program Files( \(x86\))?|Windows|AppData\\Roaming\\npm|AppData\\Local\\Programs)\\/i.test(t)) continue;
+    t = t.split(/\\(?:node_modules|\.venv|venv)\\/i)[0];
+    for (let d = t; path.dirname(d) !== d; d = path.dirname(d)) {
+      if (fs.existsSync(d) && fs.statSync(d).isDirectory() && ['package.json', 'pyproject.toml', '.git'].some((n) => fs.existsSync(path.join(d, n)))) return d;
+    }
+  }
+  return null;
+}
+
+async function projectFor(origin) {
+  const chosen = readOrigins()[origin];
+  if (chosen && fs.existsSync(chosen)) return chosen;
+  const hit = detected.get(origin);
+  if (hit && Date.now() - hit.at < 15000) return hit.project;
+  const u = new URL(origin);
+  const project = projectFromCommandLines(await processInfo(u.port || (u.protocol === 'https:' ? 443 : 80)));
+  detected.set(origin, { project, at: Date.now() });
+  return project;
+}
+
 /* ---------- Tool API (on the main port and on every app port) ---------- */
 
 function recentRows() {
@@ -427,6 +470,23 @@ const api = {
     if (b.full) { fs.writeFileSync(path.join(fp.shots, id + '-window.png'), await screenshot(b.href, b.full)); full = id + '-window.png'; }
     return { ok: true, shotFile: id + '.png', fullFile: full };
   },
+  // From the extension: screenshots it took itself (base64 PNGs), saved like the proxy ones.
+  'POST /__cf/api/capture-data': (b, q, fp) => {
+    fs.mkdirSync(fp.shots, { recursive: true });
+    const id = String(b.id).replace(/[^\w-]/g, '');
+    fs.writeFileSync(path.join(fp.shots, id + '.png'), Buffer.from(b.crop, 'base64'));
+    if (b.full) fs.writeFileSync(path.join(fp.shots, id + '-window.png'), Buffer.from(b.full, 'base64'));
+    return { ok: true, shotFile: id + '.png', fullFile: b.full ? id + '-window.png' : null };
+  },
+  // From the extension: the owner picks (or changes) the project folder for this app's address.
+  'POST /__cf/api/set-project': async (b, q) => {
+    const dir = await pick('folder');
+    if (!dir) return { ok: false };
+    const all = readOrigins();
+    all[localUrl(q.get('origin')).origin] = dir;
+    fs.writeFileSync(ORIGINS, JSON.stringify(all, null, 2));
+    return { ok: true, project: dir };
+  },
   'POST /__cf/api/export': (b, q, fp) => exportBundle(fp, b),
   'POST /__cf/api/clear': (b, q, fp) => {
     // Only after an export: the notes and screenshots are already copied into the bundle.
@@ -445,16 +505,29 @@ const api = {
     return { ok: true };
   },
 };
-const NEEDS_PAGE = /\/(draft|capture|export|clear|reveal|shot)$/;
+const NEEDS_PAGE = /\/(draft|capture|capture-data|export|clear|reveal|shot)$/;
 const MAIN_ONLY = /\/(open|go|pick|recent)$/;
 
 async function handleTool(req, res, url, ctx) {
-  // Only our own pages may change things (blocks posts from other websites).
-  if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== ctx.origin) return send(res, 403, 'Forbidden', 'text/plain');
+  // Only our own pages and our extension may change things (blocks posts from other websites).
+  const fromExtension = /^chrome-extension:\/\//.test(req.headers.origin || '');
+  if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== ctx.origin && !fromExtension) return send(res, 403, 'Forbidden', 'text/plain');
   lastSeen = Date.now();
   try {
-    if (url.pathname === '/__cf/overlay.js') return send(res, 200, fs.readFileSync(path.join(TOOL, 'overlay.js')), TYPES['.js']);
-    if (MAIN_ONLY.test(url.pathname) && ctx.app) return send(res, 404, 'Not found', 'text/plain');
+    const appOrigin = url.searchParams.get('origin');
+    if (appOrigin && !ctx.app && localUrl(appOrigin)) { // the extension, on a localhost app
+      const project = await projectFor(localUrl(appOrigin).origin);
+      if (url.pathname === '/__cf/api/draft' && req.method === 'GET' && !project) return send(res, 200, { notes: [], needProject: true });
+      if (project) ctx = { ...ctx, app: { url: localUrl(appOrigin).origin, project } };
+      else if (NEEDS_PAGE.test(url.pathname)) return send(res, 200, { error: 'Choose the project folder first' });
+    }
+    if (url.pathname === '/__cf/api/draft' && req.method === 'GET' && ctx.app) { // also tell the overlay where feedback goes
+      let d = { notes: [] };
+      try { d = JSON.parse(fs.readFileSync(feedbackPaths(null, ctx).draft, 'utf8')); } catch {}
+      return send(res, 200, { ...d, project: ctx.app.project });
+    }
+    if (url.pathname === '/__cf/overlay.js') return send(res, 200, fs.readFileSync(path.join(TOOL, 'extension', 'overlay.js')), TYPES['.js']);
+    if (MAIN_ONLY.test(url.pathname) && ctx.app && !appOrigin) return send(res, 404, 'Not found', 'text/plain');
     const fp = NEEDS_PAGE.test(url.pathname) ? feedbackPaths(url.searchParams.get('page'), ctx) : null;
     if (NEEDS_PAGE.test(url.pathname) && !fp) return send(res, 404, { error: 'unknown page' });
     if (url.pathname === '/__cf/api/shot') { // thumbnails for the notes list
@@ -486,7 +559,11 @@ if (process.argv[2] === '--serve') {
   server.listen(PORT, '127.0.0.1', () => log('listening on', ORIGIN));
   server.on('error', (e) => { log('server error', e.message); process.exit(1); });
   for (const a of readApps()) if (fs.existsSync(a.project)) startProxy(a);
-  setInterval(() => { if (Date.now() - lastSeen > IDLE_MS) { log('idle, quitting'); process.exit(0); } }, 60000);
+  // Quit when idle, unless it is meant to always run (started at login, or set up to start at login).
+  const startup = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'Annotato.lnk');
+  if (!process.argv.includes('--stay')) setInterval(() => { if (Date.now() - lastSeen > IDLE_MS && !fs.existsSync(startup)) { log('idle, quitting'); process.exit(0); } }, 60000);
+} else if (process.argv[2] === '--start') {
+  ensureServer(true).catch((e) => { console.error(e.message); process.exitCode = 1; });
 } else {
   launch(process.argv[2], process.argv[3]).catch((e) => { console.error(e.message); process.exitCode = 1; });
 }

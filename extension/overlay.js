@@ -1,19 +1,27 @@
-// Annotato overlay: injected into every mock page by server.js.
+// Annotato overlay: injected into mock pages by server.js, and into localhost apps by the Chrome
+// extension (as a content script, talking to the server through the extension's background).
 // Marks are attached to the DOM element under them (position relative to that element's box),
 // so they follow any zoom, pan or scroll the mock does. Everything lives in a shadow root so
 // the mock's CSS and ours never mix.
 (() => {
-  if (window.top !== window || window.__annotato) return;
+  // Once per page: the server may have injected it already, and the extension's toggle re-runs this file.
+  if (window.top !== window || window.__annotato || document.querySelector('annotato-overlay')) return;
   window.__annotato = true;
 
-  const q = (p) => `/__cf/api/${p}?page=${encodeURIComponent(location.pathname)}`;
+  const EXT = typeof chrome !== 'undefined' && !!(chrome.runtime && chrome.runtime.id);
+  const SERVER = 'http://127.0.0.1:4321';
+  const enc = encodeURIComponent;
+  const params = () => `page=${enc(location.pathname)}` + (EXT ? `&origin=${enc(location.origin)}` : '');
   const call = async (method, p, body) => {
-    const r = await fetch(q(p), { method, body: body === undefined ? undefined : JSON.stringify(body) });
-    const j = await r.json();
-    if (j && j.error) throw new Error(j.error);
+    const url = `/__cf/api/${p}` + (p === 'ping' ? '' : `?${params()}`);
+    let j;
+    if (EXT) j = await chrome.runtime.sendMessage({ type: 'annotato-api', method, url, body });
+    else j = await (await fetch(url, { method, body: body === undefined ? undefined : JSON.stringify(body) })).json();
+    if (!j) throw new Error('no answer from Annotato');
+    if (j.error) throw new Error(j.error);
     return j;
   };
-  const shotUrl = (f) => f && q('shot') + '&f=' + encodeURIComponent(f);
+  const shotUrl = (f) => f && `${EXT ? SERVER : ''}/__cf/api/shot?${params()}&f=${enc(f)}`;
 
   const KIND = { pin: 'Pin', box: 'Box', arrow: 'Arrow', pen: 'Drawing', note: 'Sticky note' };
   const TOOLS = [
@@ -101,6 +109,7 @@ svg.marks { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-even
 .item .meta.off { color: var(--muted); }
 .item img { grid-column: 2; max-width: 100%; max-height: 90px; justify-self: start; border-radius: var(--r1); box-shadow: 0 0 0 1px var(--line-strong); }
 .pf { padding: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.pf:empty { display: none; }
 .pf .row { display: flex; align-items: center; gap: 8px; }
 .pf .hint { flex: 1; color: var(--subtle); font-size: 12px; }
 .done { padding: 12px; border-radius: var(--r2); background: var(--raised); font-size: 13px; }
@@ -389,15 +398,20 @@ textarea:focus { border-color: #555; }
     ui.classList.add('shooting');
     await raf(); await raf();
     try {
-      const r = await call('POST', 'capture', {
-        id: a.id, href: location.href,
-        clip: { x: Math.round(cx), y: Math.round(cy), width: Math.round(cw), height: Math.round(ch) },
-        full: { x: 0, y: 0, width: innerWidth, height: innerHeight },
-      });
+      const clip = { x: Math.round(cx), y: Math.round(cy), width: Math.round(cw), height: Math.round(ch) };
+      let r;
+      if (EXT) { // the extension takes the picture with Chrome's own screenshot, then the server stores it
+        const shot = await chrome.runtime.sendMessage({ type: 'annotato-capture', clip, vw: innerWidth });
+        if (!shot || shot.error) throw new Error((shot && shot.error) || 'no screenshot');
+        r = await call('POST', 'capture-data', { id: a.id, crop: shot.crop, full: shot.full });
+      } else {
+        r = await call('POST', 'capture', { id: a.id, href: location.href, clip, full: { x: 0, y: 0, width: innerWidth, height: innerHeight } });
+      }
       a.shotFile = r.shotFile; a.fullFile = r.fullFile; a.shotAt = new Date().toISOString(); S.shots = true;
       save(); renderPanel();
     } catch (e) {
-      if (S.shots) toast('No screenshot for this note (' + esc(e.message) + '). Screenshots only work in the window the launcher opens; the note itself is saved. Use Retake shot in the note to try again.', 8000);
+      if (e.message === 'paused') toast('No screenshot: the page reloaded, so Chrome needs one more click. Click the Annotato button (or press Alt+Shift+A), then use Retake shot on this note.', 9000);
+      else if (S.shots) toast('No screenshot for this note (' + esc(e.message) + '). The note itself is saved. Use Retake shot in the note to try again.', 8000);
       S.shots = false;
     } finally { ui.classList.remove('shooting'); }
   }
@@ -631,6 +645,11 @@ textarea:focus { border-color: #555; }
     $('.count').classList.toggle('on', S.panel);
     if (!S.panel) return;
     $('.pc').textContent = live.length ? `· ${live.length}` : '';
+    if (S.needProject) {
+      $('.list').innerHTML = `<div class="empty"><p>Annotato couldn't tell which project this app belongs to, so it doesn't know where to save feedback yet.</p><p><button class="primary" data-act="project">Choose project folder…</button></p></div>`;
+      $('.pf').innerHTML = '';
+      return;
+    }
     $('.list').innerHTML = live.length ? live.map((a) => {
       const t = a.comments.length ? esc(a.comments[0].text) + (a.comments.length > 1 ? ` <span style="color:var(--subtle)">+${a.comments.length - 1}</span>` : '') : '<span style="color:var(--subtle)">No comment yet</span>';
       const base = KIND[a.type] + (a.where && a.where.anchor ? ' on ' + a.where.anchor.split(/[.#[ ]/)[0] : '');
@@ -640,6 +659,7 @@ textarea:focus { border-color: #555; }
     const ex = S.lastExport;
     $('.pf').innerHTML = (ex ? `<div class="done"><b>Exported ${ex.count} note${ex.count === 1 ? '' : 's'}</b> at ${new Date(ex.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} to<br><code>${esc(ex.dir)}</code>
       <div class="row"><button class="ghost" data-act="copy">Copy message for Claude</button><button class="ghost" data-act="reveal">Open folder</button>${live.length ? '<button class="ghost danger" data-act="fresh">Clear notes for the next round</button>' : ''}</div></div>` : '') +
+      (S.project ? `<div class="row"><span class="hint">Saves to <b style="color:var(--muted);font-weight:500;white-space:nowrap">${esc(S.project.split(/[\\/]/).pop())}</b></span><button class="ghost" data-act="project" title="Feedback folder: ${esc(S.project)}\\feedback">Change</button></div>` : '') +
       `<div class="row"><span class="hint">Notes save automatically into the project's feedback folder.</span><button class="primary" data-act="export" ${live.length ? '' : 'disabled'}>Export for Claude</button></div>`;
     updateVisibilityLabels();
   }
@@ -660,6 +680,11 @@ textarea:focus { border-color: #555; }
     if (b.dataset.act === 'export') doExport();
     if (b.dataset.act === 'copy') copyMessage();
     if (b.dataset.act === 'reveal') call('POST', 'reveal', { dir: S.lastExport.dir });
+    if (b.dataset.act === 'project') {
+      toast('A folder window opened. It may be behind Chrome.', 5000);
+      const r = await call('POST', 'set-project', {}).catch((err) => toast(esc(err.message)));
+      if (r && r.ok) { await load(); toast(`Feedback for this app now goes to ${esc(r.project)}.`); }
+    }
     if (b.dataset.act === 'fresh') {
       if (!confirm('Clear all notes from this mock? They are already saved in the exported bundle.')) return;
       await call('POST', 'clear', {});
@@ -690,6 +715,7 @@ textarea:focus { border-color: #555; }
   /* ---------- Toolbar, modes and keys ---------- */
 
   function setMode(m) {
+    if (m !== 'browse' && S.needProject) { togglePanel(true); return toast('Choose the project folder first, so Annotato knows where to save.'); }
     if (m !== S.mode) commitEditor();
     S.mode = m;
     root.querySelectorAll('.bar .t[data-mode]').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
@@ -728,7 +754,7 @@ textarea:focus { border-color: #555; }
   };
   const KEYS = { v: 'browse', c: 'pin', b: 'box', a: 'arrow', p: 'pen', n: 'note' };
   addEventListener('keydown', (e) => {
-    if (typing(e)) return;
+    if (S.off || typing(e)) return;
     const k = e.key.toLowerCase();
     if ((e.ctrlKey || e.metaKey) && k === 'z' && !e.shiftKey) {
       const a = undoStack.pop();
@@ -765,16 +791,32 @@ textarea:focus { border-color: #555; }
 
   /* ---------- Start ---------- */
 
-  async function start() {
-    document.documentElement.appendChild(host);
+  async function load() {
     try {
       const d = await call('GET', 'draft');
-      S.notes = d.notes || []; S.lastExport = d.lastExport || null;
-    } catch (e) { toast('Could not load saved notes: ' + esc(e.message), 6000); }
-    setMode('browse');
+      S.notes = d.notes || []; S.lastExport = d.lastExport || null; S.project = d.project || null; S.needProject = !!d.needProject;
+      if (S.needProject) togglePanel(true);
+    } catch (e) { toast('Could not load saved notes: ' + esc(e.message), 8000); }
     renderPanel();
+  }
+
+  // The extension's button shows and hides the whole overlay.
+  function setVisible(on) {
+    S.off = !on;
+    if (!on) { commitEditor(); setMode('browse'); }
+    host.style.display = on ? 'block' : 'none';
+  }
+  if (EXT) chrome.runtime.onMessage.addListener((m) => {
+    if (m && m.type === 'annotato-show') setVisible(m.on);
+    if (m && m.type === 'annotato-shots') toast('Screenshots are back on.');
+  });
+
+  async function start() {
+    document.documentElement.appendChild(host);
+    await load();
+    setMode('browse');
     requestAnimationFrame(render);
-    setInterval(() => fetch('/__cf/api/ping').catch(() => {}), 60000);
+    setInterval(() => call('GET', 'ping').catch(() => {}), 60000);
     if (!S.notes.length) toast('Feedback mode: pick a tool on the left, or press C to drop a pin.', 5000);
   }
   if (document.readyState === 'loading') addEventListener('DOMContentLoaded', start); else start();

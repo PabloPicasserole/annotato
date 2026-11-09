@@ -15,11 +15,20 @@ Windows 10 or 11 only (the launcher, the file pickers and the Send to menu are W
 
 Clone or download this repository anywhere, then run `Add to Send-to menu.cmd` once if you want the right-click entry.
 
+**For apps you run on this computer (optional, recommended):** the Annotato Chrome extension puts the same tools on any `localhost` page in your everyday Chrome, with nothing added to the app's code.
+
+1. Run `Start with Windows.cmd` once. The extension needs the Annotato server, and this starts it now and at every login. It is a small Node process that sits idle until you use it.
+2. In Chrome, open `chrome://extensions`, switch on **Developer mode** (top right), click **Load unpacked** and choose this repository's `extension` folder.
+3. Pin the Annotato icon (the puzzle-piece menu next to the address bar).
+
 **Try it:** drag the `demo` folder onto `Annotato.cmd`. It's a made-up meal-planner app laid out as a zoomable canvas of desktop and phone screens.
 
 ## Use it
 
-1. **Open what you want to review.** It opens in its own Chrome window (Edge if Chrome is missing).
+1. **Open what you want to review.**
+   - **An app running on this computer, with the extension:** open it in Chrome as usual and click the Annotato icon (or press **Alt+Shift+A**). Click again to hide it. It stays on through reloads. After a reload the icon's badge turns amber: Chrome needs one more click before Annotato may take screenshots again (the notes still save without it). Annotato works out the project folder from the dev server that serves the page; if it can't, the notes list asks you to choose it, and **Change** next to "Saves to" switches it later. Only `localhost`, `127.0.0.1` and `*.localhost` pages are touched.
+
+   Without the extension, everything opens in its own Chrome window (Edge if Chrome is missing):
    - **A mock or page on disk:** drag its HTML file or folder onto **`Annotato.cmd`**, or right-click it and choose **Send to › Annotato**. If the Send to entry is missing, run `Add to Send-to menu.cmd` once.
    - **A running app:** start its dev server first (usually `npm run dev`, or ask Claude to). Then double-click `Annotato.cmd`, enter the app's address (e.g. `http://localhost:5173`) and choose the project folder. Dragging an app's project folder onto the launcher takes you to the same place. Live reload keeps working while you review.
    - Double-clicking the launcher also lists recent mocks and apps to reopen.
@@ -99,7 +108,9 @@ When asked to "read feedback/<date>/" (or given the path to its `feedback.md`):
 ## How it works (for maintenance)
 
 - `server.js`: a small Node server on `127.0.0.1:4321`, no packages. It serves the mock's git repo (so `../../brand/...` links work, and links from the site's top folder like `/css/site.css` are found by walking up from the page; outside a git repo only the page's own folder is served) and injects `overlay.js` into each HTML page. Each running app gets its own port from 4322 up (saved in `work/apps.json`). That port passes everything through to the dev server, adds the overlay to HTML pages, and passes the live-reload connection through. Only `localhost` apps are accepted. It saves drafts, takes screenshots through Chrome's built-in debugging port (`9333`, review profile only), writes bundles, and quits after 30 idle minutes.
-- `overlay.js`: the annotation layer, in a shadow root so it never clashes with the mock's CSS. Notes store points relative to the element they're on, plus a text fingerprint of that element, so they survive zoom, pan and re-renders.
+- `extension/`: the Chrome extension. `background.js` switches the overlay on and off per tab, passes its requests to the server and takes screenshots with Chrome's own capture. `overlay.js` lives here too because an extension can only run its own files; the server serves the same file to pages it opens. For an app opened through the extension, the server finds the project by asking Windows which process listens on the app's port and walking up from the paths in its command line (`work/origins.json` keeps folders chosen by hand).
+- `Start with Windows.cmd`: puts Annotato in the Windows Startup folder (`node server.js --start`), so the extension always has a server to talk to.
+- `extension/overlay.js`: the annotation layer, in a shadow root so it never clashes with the mock's CSS. Notes store points relative to the element they're on, plus a text fingerprint of that element, so they survive zoom, pan and re-renders.
 - `home.html`: the start page (choose a file, open a running app, recent list).
 - `Add to Send-to menu.cmd`: puts "Annotato" in the right-click Send to menu.
 - `work/` (git-ignored): the review browser's own profile, the recent list and `server.log`.
