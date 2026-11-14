@@ -56,6 +56,8 @@ Clone or download this repository anywhere, then run `Add to Send-to menu.cmd` o
 
 Marks are attached to the element under them, so they follow zoom and pan. A mark made on a full-size screen shows only when that screen is open again. Notes save automatically as you work, so you can close the window and continue later.
 
+**Screenshots work in any browser.** Each note gets one from the best source available: Chrome's own capture when you use the extension, Annotato's own Chrome window when you opened it with `Annotato.cmd`, and otherwise (for example Claude's built-in browser, or a normal Chrome tab without the extension) the page draws the marked area itself. A drawn screenshot is very close to the screen but can differ in small details, and `feedback.md` says so. If a note has no screenshot at all, the notes list says "No screenshot" in amber, the note shows why, and `feedback.md` lists which notes are missing one.
+
 ![Zoomed out to the whole canvas: the marks stay on the elements they point at](docs/screenshots/zoomed-out.png)
 
 ## What gets written
@@ -108,6 +110,7 @@ When asked to "read feedback/<date>/" (or given the path to its `feedback.md`):
 ## How it works (for maintenance)
 
 - `server.js`: a small Node server on `127.0.0.1:4321`, no packages. It serves the mock's git repo (so `../../brand/...` links work, and links from the site's top folder like `/css/site.css` are found by walking up from the page; outside a git repo only the page's own folder is served) and injects `overlay.js` into each HTML page. Each running app gets its own port from 4322 up (saved in `work/apps.json`). That port passes everything through to the dev server, adds the overlay to HTML pages, and passes the live-reload connection through. Only `localhost` apps are accepted. It saves drafts, takes screenshots through Chrome's built-in debugging port (`9333`, review profile only), writes bundles, and quits after 30 idle minutes.
+- Screenshots, in order of preference: the extension's `chrome.tabs.captureVisibleTab`, then Annotato's own Chrome over the debugging port, then a page-drawn picture made with [modern-screenshot](https://github.com/qq15725/modern-screenshot) (MIT, one file in `extension/vendor/`, loaded only when needed). For the drawn one, assets from other sites come through the server (`/__cf/api/fetch`) so they aren't blanked out, SVG backgrounds with filters are flattened for the moment of drawing, and only free-floating elements away from the mark are skipped (skipping in-flow ones would shift the layout).
 - `extension/`: the Chrome extension. `background.js` switches the overlay on and off per tab, passes its requests to the server and takes screenshots with Chrome's own capture. `overlay.js` lives here too because an extension can only run its own files; the server serves the same file to pages it opens. For an app opened through the extension, the server finds the project by asking Windows which process listens on the app's port and walking up from the paths in its command line (`work/origins.json` keeps folders chosen by hand).
 - `Start with Windows.cmd`: puts Annotato in the Windows Startup folder (`node server.js --start`), so the extension always has a server to talk to.
 - `extension/overlay.js`: the annotation layer, in a shadow root so it never clashes with the mock's CSS. Notes store points relative to the element they're on, plus a text fingerprint of that element, so they survive zoom, pan and re-renders.
@@ -115,7 +118,7 @@ When asked to "read feedback/<date>/" (or given the path to its `feedback.md`):
 - `Add to Send-to menu.cmd`: puts "Annotato" in the right-click Send to menu.
 - `work/` (git-ignored): the review browser's own profile, the recent list and `server.log`.
 
-No dependencies beyond Node and Chrome or Edge: nothing to install or update, no service, no cost.
+No dependencies beyond Node and Chrome or Edge, plus the one bundled screenshot library: nothing to install or update, no service, no cost.
 
 Optional hook for a mock: define `window.cfContext = () => 'Welcome, phone, full size'` and that text is added to each note's "View" line.
 

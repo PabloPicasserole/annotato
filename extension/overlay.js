@@ -107,6 +107,9 @@ svg.marks { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-even
 .item .txt { min-width: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .item .meta { grid-column: 2; color: var(--subtle); font-size: 12px; }
 .item .meta.off { color: var(--muted); }
+.item .meta.noshot, .item .meta.noshot.off { color: #f5b544; }
+.warn { padding: 8px 10px; border-radius: var(--r2); background: rgba(245,181,68,.12); color: #f5b544; font-size: 13px; }
+.warn[hidden] { display: none; }
 .item img { grid-column: 2; max-width: 100%; max-height: 90px; justify-self: start; border-radius: var(--r1); box-shadow: 0 0 0 1px var(--line-strong); }
 .pf { padding: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
 .pf:empty { display: none; }
@@ -386,6 +389,11 @@ textarea:focus { border-color: #555; }
 
   /* ---------- Screenshots ---------- */
 
+  // Screenshot for a note, best source first:
+  //  1. the extension: Chrome's own capture of the tab;
+  //  2. Annotato's own Chrome window (the server asks it over its debugging port);
+  //  3. otherwise the page draws the area itself (modern-screenshot), so any browser works.
+  // If all fail, the note keeps the reason and says so in the list, the note and feedback.md.
   async function capture(a) {
     await raf(); await raf();
     const g = a._g || layoutNote(a, performance.now());
@@ -395,25 +403,136 @@ textarea:focus { border-color: #555; }
     if (a.type === 'pin') { y -= 30; h += 30; w += 30; }
     const cw = Math.min(innerWidth, Math.max(w + 320, 720)), ch = Math.min(innerHeight, Math.max(h + 320, 450));
     const cx = Math.min(Math.max(x + w / 2 - cw / 2, 0), innerWidth - cw), cy = Math.min(Math.max(y + h / 2 - ch / 2, 0), innerHeight - ch);
+    const clip = { x: Math.round(cx), y: Math.round(cy), width: Math.round(cw), height: Math.round(ch) };
+    const why = [];
+    let r = null;
     ui.classList.add('shooting');
     await raf(); await raf();
     try {
-      const clip = { x: Math.round(cx), y: Math.round(cy), width: Math.round(cw), height: Math.round(ch) };
-      let r;
-      if (EXT) { // the extension takes the picture with Chrome's own screenshot, then the server stores it
+      if (EXT) {
         const shot = await chrome.runtime.sendMessage({ type: 'annotato-capture', clip, vw: innerWidth });
-        if (!shot || shot.error) throw new Error((shot && shot.error) || 'no screenshot');
-        r = await call('POST', 'capture-data', { id: a.id, crop: shot.crop, full: shot.full });
-      } else {
-        r = await call('POST', 'capture', { id: a.id, href: location.href, clip, full: { x: 0, y: 0, width: innerWidth, height: innerHeight } });
+        if (shot && !shot.error) r = await call('POST', 'capture-data', { id: a.id, crop: shot.crop, full: shot.full });
+        else why.push(shot && shot.error === 'paused' ? 'Chrome only lets the extension take screenshots after a click on its button, and the page had reloaded' : (shot && shot.error) || 'no answer from the extension');
+      } else if (!S.noBrowserShots) {
+        try { r = await call('POST', 'capture', { id: a.id, href: location.href, clip, full: { x: 0, y: 0, width: innerWidth, height: innerHeight } }); }
+        catch (e) { S.noBrowserShots = true; why.push(e.message); } // not in Annotato's own window: don't ask again on this page
       }
-      a.shotFile = r.shotFile; a.fullFile = r.fullFile; a.shotAt = new Date().toISOString(); S.shots = true;
-      save(); renderPanel();
-    } catch (e) {
-      if (e.message === 'paused') toast('No screenshot: the page reloaded, so Chrome needs one more click. Click the Annotato button (or press Alt+Shift+A), then use Retake shot on this note.', 9000);
-      else if (S.shots) toast('No screenshot for this note (' + esc(e.message) + '). The note itself is saved. Use Retake shot in the note to try again.', 8000);
-      S.shots = false;
-    } finally { ui.classList.remove('shooting'); }
+    } catch (e) { why.push(e.message); }
+    finally { ui.classList.remove('shooting'); }
+    if (r) a.shotMethod = 'browser';
+    else {
+      try { r = await drawShot(a.id, clip); a.shotMethod = 'drawn'; } catch (e) { why.push('drawing it in the page failed: ' + e.message); }
+    }
+    if (r) {
+      a.shotFile = r.shotFile; a.fullFile = r.fullFile; a.shotAt = new Date().toISOString(); delete a.shotError;
+    } else {
+      a.shotError = why.join('; ');
+      toast(`<b>No screenshot for note ${a.num}.</b> ${esc(a.shotError)}. The note is saved; Retake shot on the note tries again.`, 10000);
+    }
+    save(); renderPanel();
+    if (S.edit && S.edit.id === a.id) refreshEditorWarning(a);
+  }
+
+  // Page-drawn screenshot: modern-screenshot redraws the page's elements into an image. Only
+  // elements inside the area are drawn (a big canvas has far more off screen), our own layer is
+  // left out, and the marks are painted on top afterwards.
+  async function loadRenderer() {
+    if (window.modernScreenshot) return window.modernScreenshot;
+    if (EXT) throw new Error('the drawing library did not load');
+    await new Promise((ok, bad) => {
+      const el = document.createElement('script');
+      el.src = '/__cf/vendor/modern-screenshot.js';
+      el.onload = ok; el.onerror = () => bad(new Error('could not load the drawing library'));
+      document.head.appendChild(el);
+    });
+    return window.modernScreenshot;
+  }
+
+  async function fetchAsset(url) {
+    if (/^(data|blob):/.test(url)) return false;
+    let u;
+    try { u = new URL(url, location.href); } catch { return false; }
+    if (u.origin === location.origin) return false; // same site: the library fetches it itself
+    const r = await call('POST', 'fetch', { url: u.href }).catch(() => null);
+    return r ? `data:${r.type};base64,${r.data}` : false;
+  }
+
+  function marksImage(vw, vh) {
+    let out = svg.innerHTML;
+    for (const b of badges.children) {
+      const r = b.getBoundingClientRect();
+      if (b.classList.contains('sticky')) {
+        const z = r.width / 220;
+        out += `<foreignObject x="0" y="0" width="220" height="${r.height / z}" transform="translate(${r.left} ${r.top}) scale(${z})"><div xmlns="http://www.w3.org/1999/xhtml" style="box-sizing:border-box;width:220px;padding:10px 12px;border-radius:4px;background:#fde68a;color:#1c1917;font:13px/1.4 'Segoe UI',system-ui,sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:0 0 0 2px #fff">${b.innerHTML.replace(/<b>/, '<b style="display:inline-block;min-width:20px;height:20px;line-height:20px;text-align:center;margin-right:6px;border-radius:10px;background:#8b5cf6;color:#fff;font-size:11px">').replace(/<i>/g, '<i style="color:#78716c">')}</div></foreignObject>`;
+      } else {
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2, rad = r.height / 2;
+        out += `<rect x="${r.left}" y="${r.top}" width="${r.width}" height="${r.height}" rx="${rad}" fill="#8b5cf6" stroke="#fff" stroke-width="2"/>` +
+          `<text x="${cx}" y="${cy}" fill="#fff" font-family="Segoe UI, system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle" dominant-baseline="central">${esc(b.textContent)}</text>`;
+      }
+    }
+    const img = new Image();
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${vw}" height="${vh}" viewBox="0 0 ${vw} ${vh}">${out}</svg>`);
+    return img.decode().then(() => img);
+  }
+
+  // SVG backgrounds that use filters (paper grain, noise) come out black when redrawn, so for the
+  // moment of drawing they are swapped for plain pictures of themselves. Returns the undo.
+  async function flattenSvgBackgrounds(els) {
+    const cache = new Map(), undo = [];
+    for (const el of els) {
+      const bi = getComputedStyle(el).backgroundImage;
+      if (!bi.includes('data:image/svg+xml') || !/<filter|%3Cfilter/i.test(bi)) continue;
+      let out = bi;
+      for (const m of bi.matchAll(/url\("(data:image\/svg\+xml[^"]*)"\)/g)) {
+        const src = m[1];
+        if (!cache.has(src)) {
+          const img = new Image(); img.src = src;
+          try { await img.decode(); } catch { continue; }
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth || 160; c.height = img.naturalHeight || 160;
+          c.getContext('2d').drawImage(img, 0, 0);
+          cache.set(src, c.toDataURL('image/png'));
+        }
+        out = out.replace(src, cache.get(src));
+      }
+      undo.push([el, el.style.getPropertyValue('background-image'), el.style.getPropertyPriority('background-image')]);
+      el.style.setProperty('background-image', out, 'important');
+    }
+    return () => { for (const [el, v, p] of undo) v ? el.style.setProperty('background-image', v, p) : el.style.removeProperty('background-image'); };
+  }
+
+  async function drawShot(id, clip) {
+    const ms = await loadRenderer();
+    const vw = innerWidth, vh = innerHeight, k = Math.min(devicePixelRatio || 1, 2);
+    const area = { l: clip.x - 40, t: clip.y - 40, r: clip.x + clip.width + 40, b: clip.y + clip.height + 40 };
+    const keep = new Set();
+    // Leaving an element out only saves time if it doesn't move the others: so only elements that
+    // float free of the layout (absolute or fixed, like the screens on a zoomable canvas) are skipped.
+    const visit = (el) => {
+      let any = false;
+      for (const c of el.children) if (visit(c)) any = true;
+      if (!any) { const b = el.getBoundingClientRect(); any = (b.width > 0 || b.height > 0) && b.right > area.l && b.bottom > area.t && b.left < area.r && b.top < area.b; }
+      if (any || !/^(absolute|fixed)$/.test(getComputedStyle(el).position)) keep.add(el);
+      return any;
+    };
+    visit(document.documentElement);
+    const KEEP_ALWAYS = /^(HEAD|STYLE|LINK|META|TITLE|BASE)$/;
+    const root = document.documentElement;
+    const restore = await flattenSvgBackgrounds(keep);
+    const canvas = await ms.domToCanvas(root, {
+      scale: k, timeout: 20000, fetchFn: fetchAsset,
+      backgroundColor: getComputedStyle(document.body).backgroundColor === 'rgba(0, 0, 0, 0)' ? (getComputedStyle(root).backgroundColor === 'rgba(0, 0, 0, 0)' ? '#ffffff' : getComputedStyle(root).backgroundColor) : getComputedStyle(document.body).backgroundColor,
+      filter: (n) => n.nodeType !== 1 || (n !== host && (keep.has(n) || KEEP_ALWAYS.test(n.tagName) || (n.ownerSVGElement && keep.has(n.ownerSVGElement)))),
+    }).finally(restore);
+    // The drawing covers the whole page; the window starts at the scroll position.
+    const ox = scrollX + clip.x, oy = scrollY + clip.y;
+    const out = document.createElement('canvas');
+    out.width = Math.round(clip.width * k); out.height = Math.round(clip.height * k);
+    const ctx = out.getContext('2d');
+    ctx.drawImage(canvas, ox * k, oy * k, clip.width * k, clip.height * k, 0, 0, out.width, out.height);
+    const marks = await marksImage(vw, vh);
+    ctx.drawImage(marks, clip.x, clip.y, clip.width, clip.height, 0, 0, out.width, out.height);
+    return call('POST', 'capture-data', { id, crop: out.toDataURL('image/png').split(',')[1] });
   }
 
   /* ---------- Creating notes ---------- */
@@ -533,12 +652,19 @@ textarea:focus { border-color: #555; }
 
   const editorText = () => { const t = editor.querySelector('textarea'); return t ? t.value.trim() : ''; };
 
+  function refreshEditorWarning(a) {
+    const w = editor.querySelector('.warn');
+    if (w) w.outerHTML = warnHtml(a);
+  }
+  const warnHtml = (a) => `<div class="warn"${a.shotError ? '' : ' hidden'}>No screenshot: ${esc(a.shotError || '')}. Retake shot tries again.</div>`;
+
   function openEditor(a, isNew) {
     S.edit = { id: a.id, isNew };
     const when = (c) => new Date(c.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     editor.innerHTML = `
       <div class="eh"><span class="n">${a.num}</span><span class="grow">${KIND[a.type]}</span><button class="x" data-act="close" title="Close (Esc)">×</button></div>
       ${a.comments.length ? `<div class="thread">${a.comments.map((c, i) => `<div class="c" contenteditable="plaintext-only" data-i="${i}" spellcheck="true">${esc(c.text)}</div>`).join('')}</div>` : ''}
+      ${warnHtml(a)}
       <textarea placeholder="${a.comments.length ? 'Add to this note…' : 'What should change here?'} Win+H to dictate" spellcheck="true"></textarea>
       <div class="ea"><button class="ghost danger" data-act="delete">Delete</button><button class="ghost" data-act="retake" title="Take this note's screenshot again with the page as it is now">Retake shot</button><span class="grow"></span><button class="primary" data-act="save">Save <span style="opacity:.5">↵</span></button></div>`;
     editor.hidden = false;
@@ -652,9 +778,9 @@ textarea:focus { border-color: #555; }
     }
     $('.list').innerHTML = live.length ? live.map((a) => {
       const t = a.comments.length ? esc(a.comments[0].text) + (a.comments.length > 1 ? ` <span style="color:var(--subtle)">+${a.comments.length - 1}</span>` : '') : '<span style="color:var(--subtle)">No comment yet</span>';
-      const base = KIND[a.type] + (a.where && a.where.anchor ? ' on ' + a.where.anchor.split(/[.#[ ]/)[0] : '');
+      const base = KIND[a.type] + (a.where && a.where.anchor ? ' on ' + a.where.anchor.split(/[.#[ ]/)[0] : '') + (a.shotError ? ' · No screenshot' : '');
       return `<button class="item${S.edit && S.edit.id === a.id ? ' sel' : ''}" data-id="${a.id}"><span class="n">${a.num}</span><span class="txt">${t}</span>` +
-        `<span class="meta" data-id="${a.id}" data-base="${esc(base)}">${esc(base)}</span>${a.shotFile ? `<img src="${shotUrl(a.shotFile)}&t=${encodeURIComponent(a.shotAt || '')}" alt="" loading="lazy">` : ''}</button>`;
+        `<span class="meta${a.shotError ? ' noshot' : ''}" data-id="${a.id}" data-base="${esc(base)}">${esc(base)}</span>${a.shotFile ? `<img src="${shotUrl(a.shotFile)}&t=${encodeURIComponent(a.shotAt || '')}" alt="" loading="lazy">` : ''}</button>`;
     }).join('') : `<div class="empty"><p>No notes yet.</p><p>Pick a tool in the bar on the left (Pin, Box, Arrow, Pen or Sticky note), mark the mock, and type what should change. Everything saves as you go.</p><p>When you're done, press Export for Claude.</p></div>`;
     const ex = S.lastExport;
     $('.pf').innerHTML = (ex ? `<div class="done"><b>Exported ${ex.count} note${ex.count === 1 ? '' : 's'}</b> at ${new Date(ex.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} to<br><code>${esc(ex.dir)}</code>

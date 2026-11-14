@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Annotato",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mark up the localhost app you're working on with pins, boxes, arrows, drawings and sticky notes, then export every note for Claude.",
   "permissions": ["scripting", "storage", "activeTab"],
   "host_permissions": ["http://localhost/*", "http://127.0.0.1/*", "http://*.localhost/*", "https://localhost/*"],

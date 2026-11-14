@@ -176,7 +176,8 @@ function openWindow(url) {
 
 // Screenshot of the visible page through the Chrome DevTools Protocol (built-in WebSocket).
 async function screenshot(pageUrl, clip) {
-  const targets = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json();
+  let targets;
+  try { targets = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json(); } catch { throw new Error("Annotato's own Chrome window isn't open"); }
   const t = targets.find((x) => x.type === 'page' && x.url === pageUrl) || targets.find((x) => x.type === 'page' && x.url.split('#')[0] === pageUrl.split('#')[0]);
   if (!t) throw new Error('page not found in the review browser');
   const ws = new WebSocket(t.webSocketDebuggerUrl);
@@ -203,6 +204,8 @@ function describeMd(a) {
   const first = (a.comments[0] && a.comments[0].text.split('\n')[0]) || '(no comment, see the mark)';
   lines.push(`## ${a.num}. ${KIND[a.type] || a.type}: ${first.length > 90 ? first.slice(0, 87) + '...' : first}`, '');
   if (a.shot) lines.push(`![note ${a.num}](${a.shot})`, '');
+  else lines.push(`**No screenshot for this note** (${a.shotError || 'it was not taken'}). Work from the element details below, or ask the reviewer.`, '');
+  if (a.shot && a.shotMethod === 'drawn') lines.push('_This screenshot was drawn by the page itself because no browser screenshot was possible, so small details (fonts, effects) can differ from the screen._', '');
   if (a.comments.length) {
     lines.push('Comments:');
     for (const c of a.comments) lines.push(`- (${clock(c.at)}) ${c.text.replace(/\n/g, '\n  ')}`);
@@ -249,6 +252,11 @@ function exportBundle(fp, meta) {
     '> the mark is attached to, as it was rendered when the note was made. Look at every screenshot, read the mock\'s',
     '> source to find each element, then act on all notes. Reply with a short list: note number, what you changed,',
     '> and any note you skipped or need the reviewer to decide.', '',
+    ...(() => {
+      const missing = list.filter((a) => !a.shot);
+      const one = missing.length === 1;
+      return missing.length ? [`> **${missing.length} of ${list.length} notes ${one ? 'has' : 'have'} no screenshot** (note${one ? '' : 's'} ${missing.map((a) => a.num).join(', ')}). ${one ? 'It says' : 'Each one says'} why.`, ''] : [];
+    })(),
     ...list.map(describeMd),
   ].join('\n');
   fs.writeFileSync(path.join(out, 'feedback.md'), md);
@@ -487,6 +495,17 @@ const api = {
     fs.writeFileSync(ORIGINS, JSON.stringify(all, null, 2));
     return { ok: true, project: dir };
   },
+  // For page-drawn screenshots: images and fonts from other sites, fetched here so the browser's
+  // cross-site rules don't blank them out. Only web addresses, only reading, at most 15 MB.
+  'POST /__cf/api/fetch': async (b) => {
+    const u = new URL(String(b.url));
+    if (!/^https?:$/.test(u.protocol)) return { error: 'only web addresses' };
+    const r = await fetch(u, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) return { error: `HTTP ${r.status}` };
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length > 15e6) return { error: 'too big' };
+    return { type: (r.headers.get('content-type') || 'application/octet-stream').split(';')[0], data: buf.toString('base64') };
+  },
   'POST /__cf/api/export': (b, q, fp) => exportBundle(fp, b),
   'POST /__cf/api/clear': (b, q, fp) => {
     // Only after an export: the notes and screenshots are already copied into the bundle.
@@ -527,6 +546,10 @@ async function handleTool(req, res, url, ctx) {
       return send(res, 200, { ...d, project: ctx.app.project });
     }
     if (url.pathname === '/__cf/overlay.js') return send(res, 200, fs.readFileSync(path.join(TOOL, 'extension', 'overlay.js')), TYPES['.js']);
+    if (url.pathname.startsWith('/__cf/vendor/')) { // the page-drawn screenshot library
+      const f = path.join(TOOL, 'extension', 'vendor', path.basename(url.pathname));
+      return fs.existsSync(f) ? send(res, 200, fs.readFileSync(f), TYPES['.js']) : send(res, 404, 'Not found', 'text/plain');
+    }
     if (MAIN_ONLY.test(url.pathname) && ctx.app && !appOrigin) return send(res, 404, 'Not found', 'text/plain');
     const fp = NEEDS_PAGE.test(url.pathname) ? feedbackPaths(url.searchParams.get('page'), ctx) : null;
     if (NEEDS_PAGE.test(url.pathname) && !fp) return send(res, 404, { error: 'unknown page' });

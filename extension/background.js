@@ -26,7 +26,7 @@ function badge(tabId, st) {
 }
 
 async function show(tabId, on) {
-  if (on) await chrome.scripting.executeScript({ target: { tabId }, files: ['overlay.js'] });
+  if (on) await chrome.scripting.executeScript({ target: { tabId }, files: ['vendor/modern-screenshot.js', 'overlay.js'] });
   await chrome.tabs.sendMessage(tabId, { type: 'annotato-show', on }).catch(() => {});
 }
 
