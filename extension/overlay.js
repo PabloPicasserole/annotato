@@ -114,6 +114,9 @@ svg.marks { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-even
 .pf { padding: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
 .pf:empty { display: none; }
 .pf .row { display: flex; align-items: center; gap: 8px; }
+.confirm { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: var(--r2); background: rgba(248,113,113,.1); font-size: 13px; }
+.danger-fill { background: #f87171 !important; color: #0a0a0a !important; }
+.danger-fill:hover { background: #fca5a5 !important; }
 .pf .hint { flex: 1; color: var(--subtle); font-size: 12px; }
 .done { padding: 12px; border-radius: var(--r2); background: var(--raised); font-size: 13px; }
 .done b { font-weight: 600; }
@@ -784,9 +787,10 @@ textarea:focus { border-color: #555; }
     }).join('') : `<div class="empty"><p>No notes yet.</p><p>Pick a tool in the bar on the left (Pin, Box, Arrow, Pen or Sticky note), mark the mock, and type what should change. Everything saves as you go.</p><p>When you're done, press Export for Claude.</p></div>`;
     const ex = S.lastExport;
     $('.pf').innerHTML = (ex ? `<div class="done"><b>Exported ${ex.count} note${ex.count === 1 ? '' : 's'}</b> at ${new Date(ex.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} to<br><code>${esc(ex.dir)}</code>
-      <div class="row"><button class="ghost" data-act="copy">Copy message for Claude</button><button class="ghost" data-act="reveal">Open folder</button>${live.length ? '<button class="ghost danger" data-act="fresh">Clear notes for the next round</button>' : ''}</div></div>` : '') +
+      <div class="row"><button class="ghost" data-act="copy">Copy message for Claude</button><button class="ghost" data-act="reveal">Open folder</button></div></div>` : '') +
       (S.project ? `<div class="row"><span class="hint">Saves to <b style="color:var(--muted);font-weight:500;white-space:nowrap">${esc(S.project.split(/[\\/]/).pop())}</b></span><button class="ghost" data-act="project" title="Feedback folder: ${esc(S.project)}\\feedback">Change</button></div>` : '') +
-      `<div class="row"><span class="hint">Notes save automatically into the project's feedback folder.</span><button class="primary" data-act="export" ${live.length ? '' : 'disabled'}>Export for Claude</button></div>`;
+      (S.confirmClear && live.length ? `<div class="confirm"><span>${esc(clearWarning(live))}</span><div class="row"><span class="hint"></span><button class="ghost" data-act="clear-cancel">Cancel</button><button class="primary danger-fill" data-act="clear-yes">Delete ${live.length} note${live.length === 1 ? '' : 's'}</button></div></div>`
+        : `<div class="row">${live.length ? '<button class="ghost danger" data-act="clear">Clear all notes</button>' : ''}<span class="hint"></span><button class="primary" data-act="export" ${live.length ? '' : 'disabled'}>Export for Claude</button></div>`);
     updateVisibilityLabels();
   }
 
@@ -811,14 +815,29 @@ textarea:focus { border-color: #555; }
       const r = await call('POST', 'set-project', {}).catch((err) => toast(esc(err.message)));
       if (r && r.ok) { await load(); toast(`Feedback for this app now goes to ${esc(r.project)}.`); }
     }
-    if (b.dataset.act === 'fresh') {
-      if (!confirm('Clear all notes from this mock? They are already saved in the exported bundle.')) return;
-      await call('POST', 'clear', {});
-      S.notes = []; commitEditor(); save(true); renderPanel();
+    if (b.dataset.act === 'clear') { S.confirmClear = true; renderPanel(); }
+    if (b.dataset.act === 'clear-cancel') { S.confirmClear = false; renderPanel(); }
+    if (b.dataset.act === 'clear-yes') {
+      S.confirmClear = false;
+      commitEditor();
+      const n = S.notes.length;
+      try { await call('POST', 'clear', {}); } catch (err) { toast('Could not clear the notes: ' + esc(err.message)); return; }
+      S.notes = []; undoStack.length = 0; save(true); renderPanel();
+      toast(`Cleared ${n} note${n === 1 ? '' : 's'}.`);
     }
   });
   panel.querySelector('.close-panel').onclick = () => togglePanel(false);
   function togglePanel(on) { S.panel = on === undefined ? !S.panel : on; renderPanel(); }
+
+  // What clearing would lose: nothing if the last export has every note as it is now.
+  function clearWarning(live) {
+    const since = S.lastExport ? Date.parse(S.lastExport.at) : 0;
+    const newer = live.filter((a) => [a.created, a.shotAt, ...a.comments.map((c) => c.at)].some((t) => t && Date.parse(t) > since));
+    const n = live.length, notes = `${n} note${n === 1 ? '' : 's'}`;
+    if (!S.lastExport) return `Delete all ${notes} and their screenshots? They haven't been exported, so this can't be undone.`;
+    if (newer.length) return `Delete all ${notes}? ${newer.length === n ? 'None of them are' : `${newer.length} of them ${newer.length === 1 ? "isn't" : "aren't"}`} in your last export as they are now, so ${newer.length === 1 ? 'that change' : 'those changes'} can't be brought back.`;
+    return `Clear all ${notes} for the next round? Your last export has all of them.`;
+  }
 
   async function doExport() {
     commitEditor();
