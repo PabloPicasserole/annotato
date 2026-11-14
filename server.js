@@ -430,7 +430,8 @@ function recentRows() {
     let notes = 0, bundles = [];
     try { notes = (JSON.parse(fs.readFileSync(fp.draft, 'utf8')).notes || []).length; } catch {}
     try { bundles = fs.readdirSync(fp.dir).filter((n) => /^\d{4}-\d\d-\d\d-\d{4}/.test(n)).sort(); } catch {}
-    return { ...r, url: r.file ? register(r.file) : null, notes, lastExport: bundles.pop() || null };
+    const app = !r.file && readApps().find((a) => a.url === r.app && a.project.toLowerCase() === r.project.toLowerCase());
+    return { ...r, url: r.file ? register(r.file) : null, annotato: app ? appOrigin(app) : null, notes, lastExport: bundles.pop() || null };
   });
 }
 
@@ -555,7 +556,10 @@ async function handleTool(req, res, url, ctx) {
     if (NEEDS_PAGE.test(url.pathname) && !fp) return send(res, 404, { error: 'unknown page' });
     if (url.pathname === '/__cf/api/shot') { // thumbnails for the notes list
       const f = path.join(fp.shots, path.basename(url.searchParams.get('f') || ''));
-      return fs.existsSync(f) ? send(res, 200, fs.readFileSync(f), 'image/png') : send(res, 404, 'Not found', 'text/plain');
+      if (!fs.existsSync(f)) return send(res, 404, 'Not found', 'text/plain');
+      // Apps that isolate themselves (COEP require-corp) only show other sites' images that allow it.
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store', 'Cross-Origin-Resource-Policy': 'cross-origin' });
+      return res.end(fs.readFileSync(f));
     }
     const fn = api[`${req.method} ${url.pathname}`];
     if (!fn) return send(res, 404, 'Not found', 'text/plain');

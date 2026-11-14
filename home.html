@@ -54,7 +54,7 @@ code { font: 13px Consolas, monospace; }
     </section>
     <section class="card">
       <h2>A running app</h2>
-      <p>An app on a dev server, like a React or Vite app at <code>localhost:5173</code>. Start it first (usually <code>npm run dev</code>, or ask Claude to).</p>
+      <p>An app on a dev server, like a React or Vite app at <code>localhost:5173</code>. Start it first (usually <code>npm run dev</code>, or ask Claude to). Annotato then gives it its own address, like <code>127.0.0.1:4322</code>: use that address in any browser without the Annotato extension, because the app's own address has no Annotato tools.</p>
       <div class="field"><input id="appurl" placeholder="http://localhost:5173" spellcheck="false"></div>
       <div class="field"><button class="ghost" id="pickdir">Choose project folder…</button><span class="folder" id="folder">Feedback is saved in this folder.</span></div>
       <div class="field"><button class="primary" id="openapp">Open app</button><span class="err" id="apperr"></span></div>
@@ -74,7 +74,7 @@ function setProject(p) { project = p; $('folder').textContent = p || 'Feedback i
 async function load() {
   const list = await (await fetch('/__cf/api/recent')).json();
   $('recent').innerHTML = list.length ? `<table><thead><tr><th>Design</th><th>Open notes</th><th>Last export</th></tr></thead><tbody>${list.map((r, i) =>
-    `<tr class="row" data-i="${i}"><td><div class="name">${esc(r.file ? last(r.file) : r.app + ' · ' + last(r.project))}</div><div class="path">${esc(r.file || 'Running app, feedback in ' + r.project)}</div></td>` +
+    `<tr class="row" data-i="${i}"><td><div class="name">${esc(r.file ? last(r.file) : r.app + ' · ' + last(r.project))}</div><div class="path">${esc(r.file || (r.annotato ? 'Open at ' + r.annotato + ' (not ' + r.app + ') · ' : '') + 'feedback in ' + r.project)}</div></td>` +
     `<td>${r.notes ? `<span class="dot"></span>${r.notes}` : '<span class="hint">None</span>'}</td><td>${r.lastExport ? esc(r.lastExport) : '<span class="hint">Never</span>'}</td></tr>`).join('')}</tbody></table>`
     : '<div class="empty">Nothing yet. Choose a file or open an app to start.</div>';
   $('recent').onclick = (e) => { const t = e.target.closest('[data-i]'); if (!t) return; const r = list[+t.dataset.i]; r.file ? (location.href = r.url) : go({ url: r.app, project: r.project }); };
